@@ -190,12 +190,12 @@ void setup() {
     redTeam[i].blackboard.put("Friends", redTeam);
     redTeam[i].blackboard.put("Enemies", blueTeam);
     redTeam[i].blackboard.put("Agent", redTeam[i]);
-    redTeam[i].setBTree(new Flee(redTeam[i].blackboard));
+    redTeam[i].setBTree(new RedDecisionTree(redTeam[i].blackboard));
     blueTeam[i] = new Agent((float)3*ARENA_SIZE/4, (float)ARENA_SIZE/8 + 100*i, false, 0);
     blueTeam[i].blackboard.put("Enemies", redTeam);
     blueTeam[i].blackboard.put("Friends", blueTeam);
     blueTeam[i].blackboard.put("Agent", blueTeam[i]);
-    blueTeam[i].setBTree(new Flee(blueTeam[i].blackboard));
+    blueTeam[i].setBTree(new BlueDecisionTree(blueTeam[i].blackboard));
   }
 }
 
@@ -267,7 +267,22 @@ class Mark extends Task {
   }
   
   int execute(){
-    return 0; 
+    Agent agent = (Agent) blackboard.get("Agent");
+    Agent[] enemies = (Agent[]) blackboard.get("Enemies");
+    if(enemies == null || enemies.length == 0){
+      return FAIL; 
+    }
+    float dist = MAX_FLOAT;
+    Agent closest = null;
+    for(Agent a : enemies){
+      if(dist(a.x, a.y, agent.x, agent.y) < dist && !a.dead){
+        closest = a;
+        dist = dist(a.x, a.y, agent.x, agent.y);
+      }
+    }
+    if(closest == null){ return FAIL; }
+    agent.blackboard.put("Mark", closest);
+    return SUCCESS; 
   }
 }
 
@@ -276,7 +291,18 @@ class Pursue extends Task {
     this.blackboard = bb;
   }
   int execute(){
-    return 0; 
+    Agent agent = (Agent) blackboard.get("Agent");
+    Agent mark = (Agent) blackboard.get("Mark");
+    if(mark == null){
+      return FAIL;
+    }
+    PVector displacement = new PVector(mark.x - agent.x, mark.y - agent.y);
+    if (displacement.mag() > MAX_ACCEL) {
+      displacement.setMag(MAX_ACCEL);
+    }
+    agent.linear_steering.add(displacement);
+
+    return SUCCESS; 
   }
 }
 
@@ -286,7 +312,25 @@ class Aim extends Task {
   }
   
   int execute(){
-    return 0; 
+    Agent agent = (Agent) blackboard.get("Agent");
+    Agent mark = (Agent) blackboard.get("Mark");
+    if(mark == null || mark.dead){
+      return FAIL;
+    }
+    //Align code based on Professor Gold's Assignment 1 Steering Solution
+    PVector direction = new PVector(mark.x - agent.x, mark.y - agent.y);
+    float angle = direction.heading();
+
+    float difference = boundDiff(angle - agent.angle);
+    
+    float rotationSize = abs(difference);
+    if (rotationSize < ALIGN_TARGET_RAD) {
+      return FAIL;
+    }
+    
+    agent.angle += (difference / rotationSize) * (rotationSize > ALIGN_SLOW_RAD ? MAX_ROT_SPEED : MAX_ROT_SPEED * rotationSize / ALIGN_SLOW_RAD);
+    
+    return SUCCESS; 
   }
 }
 
@@ -296,7 +340,14 @@ class Shoot extends Task {
   }
   
   int execute(){
-    return 0; 
+    Agent agent = (Agent) blackboard.get("Agent");
+    Agent mark = (Agent) blackboard.get("Mark");
+    Bullet myBullet = agent.bullet;
+    if(myBullet.active || agent.firing || mark == null || mark.dead){
+      return FAIL;
+    }
+    agent.firing = true;
+    return SUCCESS; 
   }
 }
 
@@ -306,8 +357,100 @@ class Help extends Task {
   }
   
   int execute(){
-    return 0; 
+    Agent agent = (Agent) blackboard.get("Agent");
+    Agent[] friends = (Agent[]) blackboard.get("Friends");
+    float dist = MAX_FLOAT;
+    Agent closest = null;
+    for(Agent a : friends){
+      if(dist(a.x, a.y, agent.x, agent.y) < dist && !a.dead){
+        Agent mark = (Agent) a.blackboard.get("Mark");
+        if(mark != null && !mark.dead){
+          closest = a;
+          dist = dist(a.x, a.y, agent.x, agent.y);
+        }
+      }
+    }
+    if(closest == null || dist == MAX_FLOAT){ return FAIL; }
+    agent.blackboard.put("Mark", closest.blackboard.get("Mark"));
+    return SUCCESS; 
   }
 }
 
+class RedDecisionTree extends Task {
+  Task[] executeList;
+  RedDecisionTree(Blackboard bb) {
+    this.blackboard = bb;
+    this.executeList = new Task[]{new Shoot(bb), new Aim(bb), new Mark(bb) };
+  }
   
+  int execute(){
+    Agent agent = (Agent) blackboard.get("Agent");
+    agent.firing = false;
+    int i = 1;
+    if(inLineOfSight(this.blackboard)){
+      i = 0;
+    }
+    for(; i < executeList.length; i++){
+      if(executeList[i].execute() == SUCCESS){ return SUCCESS; }
+    }
+    return FAIL; 
+  }
+}
+
+class BlueDecisionTree extends Task {
+  Task[] markList;
+  Task[] executeList;
+  BlueDecisionTree(Blackboard bb) {
+    this.blackboard = bb;
+    this.markList = new Task[]{new Help(bb), new Mark(bb)};
+    this.executeList = new Task[]{new Shoot(bb), new Aim(bb), new Pursue(bb)};
+  }
+  
+  int execute(){
+    Agent agent = (Agent) blackboard.get("Agent");
+    Agent mark = (Agent) blackboard.get("Mark");
+    agent.firing = false;
+    if(mark == null || mark.dead){
+      for(int i = 0; i < markList.length; i++){
+        if(markList[i].execute() == SUCCESS){ return SUCCESS; } 
+      }
+      return FAIL;
+    } else {
+      int i = 1;
+      if(inLineOfSight(this.blackboard)){
+        i = 0;
+      }
+      for(; i < executeList.length; i++){
+        if(executeList[i].execute() == SUCCESS){ return SUCCESS; }
+      }
+      return FAIL;
+    }
+  }
+}
+
+
+float boundDiff(float difference){
+   while (difference < -PI) {
+     difference += 2*PI;
+   }
+   while (difference >= PI) {
+     difference -= 2*PI;
+   }
+   return difference;
+}
+
+boolean inLineOfSight(Blackboard blackboard){
+  Agent agent = (Agent) blackboard.get("Agent");
+  Agent mark = (Agent) blackboard.get("Mark");
+  if(mark != null && !mark.dead){  
+    PVector direction = new PVector(mark.x - agent.x, mark.y - agent.y);
+    float angle = direction.heading();
+    float difference = boundDiff(angle - agent.angle);
+  
+    float rotationSize = abs(difference);
+    if(rotationSize < ALIGN_TARGET_RAD && !mark.dead){
+      return true;
+    }
+  }
+  return false;
+}
