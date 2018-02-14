@@ -5,8 +5,7 @@ import java.io.BufferedWriter;
 import java.io.FileNotFoundException;
 import java.util.Random;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
+import java.io.*;
 
 static final int SQUARE_WIDTH = 40;
 static final int NUM_COLUMNS = 8;
@@ -33,13 +32,23 @@ boolean AIOnly = true;
 
 int[][] board;
 
+int[] keyTable;
+
+static HashMap<Integer, MMXMove> transTable;
+
 void settings() {
   size(SQUARE_WIDTH * NUM_COLUMNS, SQUARE_WIDTH * (NUM_COLUMNS + 1));
 }
 
 void setup() {
   resetBoard();
+  if (!readTables()) {
+    print("read fail");
+    initKeyTable();
+    transTable = new HashMap<Integer, MMXMove>();
+  }
 }
+
 
 void resetBoard() {
   board = new int[NUM_COLUMNS][NUM_COLUMNS];
@@ -47,6 +56,60 @@ void resetBoard() {
   board[NUM_COLUMNS/2][NUM_COLUMNS/2] = WHITE;
   board[NUM_COLUMNS/2-1][NUM_COLUMNS/2] = BLACK;
   board[NUM_COLUMNS/2][NUM_COLUMNS/2-1] = BLACK;
+}
+
+boolean readTables() {
+  try {
+    FileInputStream f = new FileInputStream("tables.txt");
+    ObjectInputStream o = new ObjectInputStream(f);
+    keyTable = (int[]) o.readObject();
+    transTable = (HashMap<Integer, MMXMove>) o.readObject();
+    o.close();
+    f.close();
+    return (transTable != null && keyTable != null);
+  } 
+  catch(Exception e) {
+    return false;
+  }
+}
+
+void initKeyTable() {
+  //keyTable[tableSize] - hash for white turn
+  int tableSize = ((int) sq(NUM_COLUMNS) * 2) + 1;
+  keyTable = new int[tableSize];
+  Random r = new Random();
+  for (int i = 0; i < tableSize - 1; i++) {
+    keyTable[i] = r.nextInt();
+  }
+}
+
+Integer hashBoard(int[][] board, boolean turn) {
+  int retVal = turn ? keyTable[keyTable.length - 1] : 0;
+  for (int i = 0; i < NUM_COLUMNS; i++) {
+    for (int j = 0; j < NUM_COLUMNS; j++) {
+      if (board[i][j] == WHITE) {
+        retVal ^= keyTable[(i*NUM_COLUMNS) + j];
+      } else if (board[i][j] == BLACK) {
+        retVal ^= keyTable[((i*NUM_COLUMNS) + j) * 2];
+      }
+    }
+  }
+  return retVal;
+}
+
+void cleanup() {
+  try {
+    FileOutputStream f = new FileOutputStream("tables.txt");
+    ObjectOutputStream o = new ObjectOutputStream(f);
+    o.writeObject(keyTable);
+    o.writeObject(transTable);
+    o.close();
+    f.close();
+  } 
+  catch(IOException e) {
+    print(e.toString());
+  }
+  exit();
 }
 
 void draw() {
@@ -66,7 +129,8 @@ void drawGame() {
       int winner = findWinner(board);   // We'll just end up doing this until the end of time
       drawBoardPieces();
       declareWinner(winner);
-      return;
+      cleanup();
+      exit();
     }
     legalMoves = generateLegalMoves(board, true);
   }
@@ -165,7 +229,7 @@ void drawBoardPieces() {
   }
 }
 
-class Move {
+class Move{
   int row;
   int col;
 
@@ -301,12 +365,26 @@ int checkGameOver(int[][] board) {
 
 //wrapper class for a Move and it's minimax value
 //Used to determine corresponding move for best minimax value
-class MMXMove {
-  Move m;
+class MMXMove implements Serializable {
+  int row;
+  int col;
   float value;
   MMXMove(Move m, float value) {
-    this.m = m;
+    if (m != null) {
+      this.row = m.row;
+      this.col = m.col;
+    } else {
+      this.row = -1;
+      this.col = -1;
+    }
     this.value = value;
+  }
+
+  Move getMove() {
+    if (row == -1 || col == -1) {
+      return null;
+    }
+    return new Move(row, col);
   }
 }
 
@@ -317,7 +395,7 @@ class MMXMove {
 // it's not any more complicated since you need to minimax regardless
 void AIPlay(int[][] board, boolean whiteTurn, ArrayList<Move> legalMoves) {
 
-  Move bestMove = minimax(board, MIN_FLOAT, MAX_FLOAT, 0, whiteTurn).m;
+  Move bestMove = minimax(board, MIN_FLOAT, MAX_FLOAT, 0, whiteTurn).getMove();
   if (bestMove != null) {
     board[bestMove.row][bestMove.col] = (whiteTurn ? WHITE : BLACK);
     capture(board, bestMove.row, bestMove.col, whiteTurn);
@@ -344,6 +422,10 @@ int[][] fakeMove(int[][] board, Move m, boolean white) {
 MMXMove minimax(int[][] board, float alpha, float beta, int currentDepth, boolean white) {
   int maxDepth = 7;
   ArrayList<Move> legalMoves = generateLegalMoves(board, white);
+  Integer hash = hashBoard(board, white);
+  if (transTable.containsKey(hash)) {
+    return transTable.get(hash);
+  }
   if (currentDepth >= maxDepth || legalMoves.isEmpty()) {
     return new MMXMove(null, evaluationFunction(board));
   }
@@ -352,17 +434,22 @@ MMXMove minimax(int[][] board, float alpha, float beta, int currentDepth, boolea
   for (Move m : legalMoves) {
     int[][] boardCpy = fakeMove(board, m, white);
     MMXMove tmp = minimax(boardCpy, alpha, beta, currentDepth + 1, !white);
-    if(!white && tmp.value >= best.value){//MAX
-      best.value = tmp.value;
-      best.m = m;
+    if (!white && tmp.value >= best.value) {//MAX
+      best = new MMXMove(m, tmp.value);
       alpha = max(best.value, alpha);
-      if(best.value >= abs(beta)){ break; }
-    } else if(white && tmp.value <= best.value){//MIN
-      best.value = tmp.value;
-      best.m = m;
+      if (best.value >= abs(beta)) { 
+        break;
+      }
+    } else if (white && tmp.value <= best.value) {//MIN
+      best = new MMXMove(m, tmp.value);
       beta = min(best.value, beta);
-      if(abs(best.value) <= alpha){ break; }
+      if (abs(best.value) <= alpha) { 
+        break;
+      }
     }
+  }
+  if (!transTable.containsKey(hash) || abs(transTable.get(hash).value) < abs(best.value)) {
+    transTable.put(hash, best);
   }
   return best;
 }
