@@ -24,6 +24,10 @@ static final float WIN_ANNOUNCE_Y = (NUM_COLUMNS + 0.5) * SQUARE_WIDTH;
 
 static final int BACKGROUND_BRIGHTNESS = 128;
 
+static final int MAX_DEPTH = 7;
+
+static final String TABLES_FILE = "tables.txt";
+
 float WIN_VAL = 100;
 
 boolean gameOver = false;
@@ -34,7 +38,9 @@ int[][] board;
 
 int[] keyTable;
 
-static HashMap<Integer, MMXMove> transTable;
+HashMap<Integer, MMXMove> transTable;
+
+boolean exit = false;
 
 void settings() {
   size(SQUARE_WIDTH * NUM_COLUMNS, SQUARE_WIDTH * (NUM_COLUMNS + 1));
@@ -60,7 +66,7 @@ void resetBoard() {
 
 boolean readTables() {
   try {
-    FileInputStream f = new FileInputStream("tables.txt");
+    FileInputStream f = new FileInputStream(TABLES_FILE);
     ObjectInputStream o = new ObjectInputStream(f);
     keyTable = (int[]) o.readObject();
     transTable = (HashMap<Integer, MMXMove>) o.readObject();
@@ -99,21 +105,26 @@ Integer hashBoard(int[][] board, boolean turn) {
 
 void cleanup() {
   try {
-    FileOutputStream f = new FileOutputStream("tables.txt");
+    FileOutputStream f = new FileOutputStream(TABLES_FILE);
     ObjectOutputStream o = new ObjectOutputStream(f);
     o.writeObject(keyTable);
     o.writeObject(transTable);
     o.close();
     f.close();
   } 
-  catch(IOException e) {
-    print(e.toString());
+  catch(Exception e) {
+    e.printStackTrace();
+    print("\n" + e.getMessage() + "\n");
   }
   exit();
 }
 
 void draw() {
-  drawGame();
+  if (gameOver) { 
+    cleanup();
+  } else {
+    drawGame();
+  }
 }
 
 void drawGame() {
@@ -126,11 +137,9 @@ void drawGame() {
     if (!blackLegalMoves.isEmpty()) {
       AIPlay(board, false, blackLegalMoves);
     } else {
-      int winner = findWinner(board);   // We'll just end up doing this until the end of time
-      drawBoardPieces();
-      declareWinner(winner);
-      cleanup();
-      exit();
+      checkGameOver(board);
+
+      return;
     }
     legalMoves = generateLegalMoves(board, true);
   }
@@ -182,6 +191,7 @@ int findWinner(int[][] board) {
       if (board[row][col] == BLACK) blackCount++;
     }
   }
+  gameOver = true;
   if (whiteCount > blackCount) {
     return WHITE;
   } else if (whiteCount < blackCount) {
@@ -229,7 +239,7 @@ void drawBoardPieces() {
   }
 }
 
-class Move{
+class Move {
   int row;
   int col;
 
@@ -350,41 +360,42 @@ float evaluationFunction(int[][] board) {
 
 // checkGameOver returns the winner, or NOBODY if the game's not over
 // --recall the game ends when there are no legal moves for either side
-int checkGameOver(int[][] board) {
+void checkGameOver(int[][] board) {
   ArrayList<Move> whiteLegalMoves = generateLegalMoves(board, true);
   if (!whiteLegalMoves.isEmpty()) {
-    return NOBODY;
+    return;
   }
   ArrayList<Move> blackLegalMoves = generateLegalMoves(board, false);
   if (!blackLegalMoves.isEmpty()) {
-    return NOBODY;
+    return;
   }
   // No legal moves, so the game is over
-  return findWinner(board);
+  drawBoardPieces();
+  declareWinner(findWinner(board));
 }
 
 //wrapper class for a Move and it's minimax value
 //Used to determine corresponding move for best minimax value
-class MMXMove implements Serializable {
+static class MMXMove implements java.io.Serializable {
   int row;
   int col;
   float value;
-  MMXMove(Move m, float value) {
-    if (m != null) {
-      this.row = m.row;
-      this.col = m.col;
-    } else {
-      this.row = -1;
-      this.col = -1;
-    }
+  MMXMove() {
+    this.row = -1;
+    this.col = -1;
+    this.value = 0;
+  }
+
+  MMXMove(int row, int col, float value) {
+    this.row = row;
+    this.col = col;
     this.value = value;
   }
 
-  Move getMove() {
-    if (row == -1 || col == -1) {
-      return null;
-    }
-    return new Move(row, col);
+  MMXMove(float value) {
+    this.row = -1;
+    this.col = -1;
+    this.value = value;
   }
 }
 
@@ -395,14 +406,13 @@ class MMXMove implements Serializable {
 // it's not any more complicated since you need to minimax regardless
 void AIPlay(int[][] board, boolean whiteTurn, ArrayList<Move> legalMoves) {
 
-  Move bestMove = minimax(board, MIN_FLOAT, MAX_FLOAT, 0, whiteTurn).getMove();
-  if (bestMove != null) {
+  MMXMove bestMove = minimax(board, MIN_FLOAT, MAX_FLOAT, 0, whiteTurn, MAX_DEPTH);
+
+  if (bestMove != null && bestMove.row != -1 && bestMove.col != -1) {
     board[bestMove.row][bestMove.col] = (whiteTurn ? WHITE : BLACK);
     capture(board, bestMove.row, bestMove.col, whiteTurn);
   } else {
-    int winner = findWinner(board);   // We'll just end up doing this until the end of time
-    drawBoardPieces();
-    declareWinner(winner);
+    checkGameOver(board);   // We'll just end up doing this until the end of time
   }
   return;
 }
@@ -419,29 +429,28 @@ int[][] fakeMove(int[][] board, Move m, boolean white) {
 }
 
 //Based on minimax pseudocode in the Lecture Slides
-MMXMove minimax(int[][] board, float alpha, float beta, int currentDepth, boolean white) {
-  int maxDepth = 7;
+MMXMove minimax(int[][] board, float alpha, float beta, int currentDepth, boolean white, int maxDepth) {
   ArrayList<Move> legalMoves = generateLegalMoves(board, white);
   Integer hash = hashBoard(board, white);
   if (transTable.containsKey(hash)) {
     return transTable.get(hash);
   }
   if (currentDepth >= maxDepth || legalMoves.isEmpty()) {
-    return new MMXMove(null, evaluationFunction(board));
+    return new MMXMove(evaluationFunction(board));
   }
 
-  MMXMove best = !white ? new MMXMove(null, MIN_FLOAT) : new MMXMove(null, MAX_FLOAT);
+  MMXMove best = !white ? new MMXMove(MIN_FLOAT) : new MMXMove(MAX_FLOAT);
   for (Move m : legalMoves) {
     int[][] boardCpy = fakeMove(board, m, white);
-    MMXMove tmp = minimax(boardCpy, alpha, beta, currentDepth + 1, !white);
+    MMXMove tmp = minimax(boardCpy, alpha, beta, currentDepth + 1, !white, maxDepth);
     if (!white && tmp.value >= best.value) {//MAX
-      best = new MMXMove(m, tmp.value);
+      best = new MMXMove(m.row, m.col, tmp.value);
       alpha = max(best.value, alpha);
       if (best.value >= abs(beta)) { 
         break;
       }
     } else if (white && tmp.value <= best.value) {//MIN
-      best = new MMXMove(m, tmp.value);
+      best = new MMXMove(m.row, m.col, tmp.value);
       beta = min(best.value, beta);
       if (abs(best.value) <= alpha) { 
         break;
